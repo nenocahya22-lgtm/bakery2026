@@ -128,16 +128,20 @@ def init_db():
         cursor.execute(f"CREATE TABLE IF NOT EXISTS budget_usage_log (id {pk}, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, room_name TEXT, amount FLOAT, description TEXT)")
         cursor.execute(f"CREATE TABLE IF NOT EXISTS budget_allocation (room_name TEXT PRIMARY KEY, target_pct FLOAT)")
         
-        # Seed
-        if cursor.execute("SELECT COUNT(*) FROM users WHERE username='admin'").scalar() == 0:
-            cursor.execute("INSERT INTO users (username, password, role) VALUES ('admin', 'nearbakery2024', 'OWNER')")
-        if cursor.execute("SELECT COUNT(*) FROM business_vault").scalar() == 0:
+        # Force Seed for Admin
+        check_admin = cursor.execute("SELECT COUNT(*) FROM users WHERE username='admin'").fetchone()
+        count = check_admin[0] if check_admin else 0
+        
+        if count == 0:
+            cursor.execute("INSERT INTO users (username, password, role) VALUES (?,?,?)", ("admin", "nearbakery2024", "OWNER"))
+            conn.commit()
+            
+        res_v = cursor.execute("SELECT COUNT(*) FROM business_vault").fetchone()
+        if res_v and res_v[0] == 0:
             cursor.execute("INSERT INTO business_vault (current_balance) VALUES (0)")
-        if cursor.execute("SELECT COUNT(*) FROM finance_config").scalar() == 0:
-            cursor.execute("INSERT INTO finance_config (config_key, config_value) VALUES ('global_margin_pct', 100)")
-            cursor.execute("INSERT INTO finance_config (config_key, config_value) VALUES ('cogs_buffer_pct', 5)")
-        conn.commit()
-    except Exception as e: st.error(f"Init Error: {e}")
+            conn.commit()
+    except Exception as e: 
+        st.error(f"Seeding Error: {e}")
     finally: conn.close()
 
 # =============================================================================
@@ -268,11 +272,25 @@ def main():
     
     if not st.session_state.auth:
         st.markdown("<div style='text-align:center; padding-top:100px;'><h1>NEAR BAKERY</h1><h3>EXECUTIVE LOGIN</h3>", unsafe_allow_html=True)
-        u = st.text_input("User", placeholder="Username"); p = st.text_input("Pass", type="password", placeholder="Password")
+        u = st.text_input("User", placeholder="Username")
+        p = st.text_input("Pass", type="password", placeholder="Password")
+        
+        conn_check = get_connection()
+        db_mode = conn_check.mode.upper()
+        conn_check.close()
+        
         if st.button("LOGIN", use_container_width=True, type="primary"):
-            c = get_connection(); user = c.execute("SELECT username, role FROM users WHERE username=? AND password=?", (u, p)).fetchone(); c.close()
-            if user: st.session_state.auth = True; st.session_state.user = user[0]; st.session_state.role = user[1]; st.rerun()
-            else: st.error("Akses Ditolak!")
+            c = get_connection()
+            user = c.execute("SELECT username, role FROM users WHERE username=? AND password=?", (u, p)).fetchone()
+            c.close()
+            if user: 
+                st.session_state.auth = True
+                st.session_state.user = user[0]
+                st.session_state.role = user[1]
+                st.rerun()
+            else: st.error("Akses Ditolak! Periksa Username & Password.")
+        
+        st.markdown(f"<div style='text-align:center; color:#94A3B8; font-size:10px;'>System Mode: {db_mode} | DB: Supabase v7.0</div>", unsafe_allow_html=True)
         return
 
     with st.sidebar:
