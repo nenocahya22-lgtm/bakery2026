@@ -17,15 +17,25 @@ from sqlalchemy.orm import sessionmaker
 from fpdf import FPDF
 
 # =============================================================================
-# [1] DATABASE ENGINE & COMPATIBILITY
+# [1] SMART DATABASE ENGINE (SUPABASE WITH SQLITE FALLBACK)
 # =============================================================================
-try:
-    DB_URL = st.secrets["DB_URL"]
-except:
-    DB_URL = "postgresql://postgres.btcsynyxodkonqdpwowx:%23Nenocahyamulan190604@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"
-
-engine = create_engine(DB_URL, pool_size=10, max_overflow=20)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def get_connection():
+    # 1. Try Supabase Cloud first
+    try:
+        db_url = st.secrets.get("DB_URL")
+        if db_url:
+            engine_cloud = create_engine(db_url, pool_size=5, max_overflow=10)
+            return PostgresCompat(engine_cloud.connect())
+    except:
+        pass
+    
+    # 2. Fallback to Local SQLite (Always Works)
+    try:
+        conn = sqlite3.connect("near_bakery_v5.db", check_same_thread=False)
+        return conn
+    except Exception as e:
+        st.error(f"Database Error: {e}")
+        return None
 
 class PostgresCompat:
     def __init__(self, conn):
@@ -69,42 +79,52 @@ class PostgresCompat:
         try: self.conn.close()
         except: pass
 
-def get_connection(): return PostgresCompat(engine.connect())
-
 def init_db():
     conn = get_connection()
+    if conn is None: return
     try:
-        conn.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username TEXT UNIQUE, password TEXT, role TEXT, email TEXT, permissions TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS inventory_master (id SERIAL PRIMARY KEY, name TEXT, category TEXT, stock FLOAT, unit_beli TEXT, unit_pakai TEXT, price_per_unit_beli FLOAT, price_per_unit_pakai FLOAT, barcode TEXT UNIQUE, last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        conn.execute("CREATE TABLE IF NOT EXISTS recipe_master (id SERIAL PRIMARY KEY, name TEXT, barcode TEXT UNIQUE, category TEXT, yield_qty FLOAT, yield_unit TEXT, selling_price FLOAT DEFAULT 0, discount_pct FLOAT DEFAULT 0, image_path TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS recipe_ingredients (id SERIAL PRIMARY KEY, recipe_id INTEGER, inventory_id INTEGER, qty_pakai FLOAT, unit TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS sales_log (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, total_revenue FLOAT, total_hpp FLOAT DEFAULT 0, profit FLOAT DEFAULT 0, payment_method TEXT, customer_id INTEGER)")
-        conn.execute("CREATE TABLE IF NOT EXISTS finance_config (config_key TEXT PRIMARY KEY, config_value FLOAT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS pending_approvals (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, user_requester TEXT, action_type TEXT, description TEXT, data_payload TEXT, reason TEXT, status TEXT DEFAULT 'PENDING')")
-        conn.execute("CREATE TABLE IF NOT EXISTS business_vault (id SERIAL PRIMARY KEY, current_balance FLOAT DEFAULT 0, last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-        conn.execute("CREATE TABLE IF NOT EXISTS vault_ledger (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, amount FLOAT, type TEXT, source TEXT, description TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, user_actor TEXT, action TEXT, table_name TEXT, old_value TEXT, new_value TEXT, reason TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS internal_messages (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, sender TEXT, message TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS stock_movement_log (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, inventory_id INTEGER, qty FLOAT, type TEXT, reason TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS custom_orders (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, customer_name TEXT, phone TEXT, order_details TEXT, pickup_date DATE, total_price FLOAT, down_payment FLOAT, notes TEXT, status TEXT DEFAULT 'PENDING')")
-        conn.execute("CREATE TABLE IF NOT EXISTS waste_log (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, inventory_id INTEGER, qty_waste FLOAT, loss_value FLOAT, reason TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS suppliers (id SERIAL PRIMARY KEY, name TEXT, contact_person TEXT, phone TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS purchase_order_log (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, inventory_id INTEGER, supplier_id INTEGER, qty_order FLOAT, unit_order TEXT, price_total FLOAT, status TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS rd_trials (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name TEXT, total_cost FLOAT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS rd_trial_ingredients (id SERIAL PRIMARY KEY, trial_id INTEGER, inventory_id INTEGER, qty_pakai FLOAT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS product_addons (id SERIAL PRIMARY KEY, name TEXT, price FLOAT, inventory_id INTEGER, qty_deduct FLOAT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS budget_usage_log (id SERIAL PRIMARY KEY, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, room_name TEXT, amount FLOAT, description TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS budget_allocation (room_name TEXT PRIMARY KEY, target_pct FLOAT)")
+        # SQLite uses 'INTEGER PRIMARY KEY AUTOINCREMENT', Postgres uses 'SERIAL PRIMARY KEY'
+        # We use a generic approach or handle both. For fallback, we focus on SQLite syntax.
+        is_sqlite = not hasattr(conn, 'conn') # Simple check
+        
+        pk = "INTEGER PRIMARY KEY AUTOINCREMENT" if is_sqlite else "SERIAL PRIMARY KEY"
+        curr_date = "date('now')" if is_sqlite else "CURRENT_DATE"
+        curr_ts = "datetime('now')" if is_sqlite else "CURRENT_TIMESTAMP"
+        
+        cursor = conn.cursor()
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS users (id {pk}, username TEXT UNIQUE, password TEXT, role TEXT, email TEXT, permissions TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS inventory_master (id {pk}, name TEXT, category TEXT, stock FLOAT, unit_beli TEXT, unit_pakai TEXT, price_per_unit_beli FLOAT, price_per_unit_pakai FLOAT, barcode TEXT UNIQUE, last_updated TIMESTAMP DEFAULT {curr_ts})")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS recipe_master (id {pk}, name TEXT, barcode TEXT UNIQUE, category TEXT, yield_qty FLOAT, yield_unit TEXT, selling_price FLOAT DEFAULT 0, discount_pct FLOAT DEFAULT 0, image_path TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS recipe_ingredients (id {pk}, recipe_id INTEGER, inventory_id INTEGER, qty_pakai FLOAT, unit TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS sales_log (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, total_revenue FLOAT, total_hpp FLOAT DEFAULT 0, profit FLOAT DEFAULT 0, payment_method TEXT, customer_id INTEGER)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS business_vault (id {pk}, current_balance FLOAT DEFAULT 0, last_update TIMESTAMP DEFAULT {curr_ts})")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS vault_ledger (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, amount FLOAT, type TEXT, source TEXT, description TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS finance_config (config_key TEXT PRIMARY KEY, config_value FLOAT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS pending_approvals (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, user_requester TEXT, action_type TEXT, description TEXT, data_payload TEXT, reason TEXT, status TEXT DEFAULT 'PENDING')")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS internal_messages (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, sender TEXT, message TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS audit_logs (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, user_actor TEXT, action TEXT, table_name TEXT, old_value TEXT, new_value TEXT, reason TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS stock_movement_log (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, inventory_id INTEGER, qty FLOAT, type TEXT, reason TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS custom_orders (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, customer_name TEXT, phone TEXT, order_details TEXT, pickup_date DATE, total_price FLOAT, down_payment FLOAT, notes TEXT, status TEXT DEFAULT 'PENDING')")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS waste_log (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, inventory_id INTEGER, qty_waste FLOAT, loss_value FLOAT, reason TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS suppliers (id {pk}, name TEXT, contact_person TEXT, phone TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS purchase_order_log (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, inventory_id INTEGER, supplier_id INTEGER, qty_order FLOAT, unit_order TEXT, price_total FLOAT, status TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS rd_trials (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, name TEXT, total_cost FLOAT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS rd_trial_ingredients (id {pk}, trial_id INTEGER, inventory_id INTEGER, qty_pakai FLOAT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS product_addons (id {pk}, name TEXT, price FLOAT, inventory_id INTEGER, qty_deduct FLOAT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS budget_usage_log (id {pk}, timestamp TIMESTAMP DEFAULT {curr_ts}, room_name TEXT, amount FLOAT, description TEXT)")
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS budget_allocation (room_name TEXT PRIMARY KEY, target_pct FLOAT)")
         
         # Seed
-        if conn.execute("SELECT COUNT(*) FROM users WHERE username='admin'").scalar() == 0:
-            conn.execute("INSERT INTO users (username, password, role) VALUES ('admin', 'nearbakery2024', 'OWNER')")
-        if conn.execute("SELECT COUNT(*) FROM business_vault").scalar() == 0:
-            conn.execute("INSERT INTO business_vault (current_balance) VALUES (0)")
-        if conn.execute("SELECT COUNT(*) FROM finance_config").scalar() == 0:
-            conn.execute("INSERT INTO finance_config (config_key, config_value) VALUES ('global_margin_pct', 100)")
-            conn.execute("INSERT INTO finance_config (config_key, config_value) VALUES ('cogs_buffer_pct', 5)")
-        conn.commit()
+        res = cursor.execute("SELECT COUNT(*) FROM users WHERE username='admin'").fetchone()
+        if res and res[0] == 0:
+            cursor.execute("INSERT INTO users (username, password, role) VALUES ('admin', 'nearbakery2024', 'OWNER')")
+        
+        res_v = cursor.execute("SELECT COUNT(*) FROM business_vault").fetchone()
+        if res_v and res_v[0] == 0:
+            cursor.execute("INSERT INTO business_vault (current_balance) VALUES (0)")
+            
+        if is_sqlite: conn.commit()
+        else: conn.commit()
     except Exception as e: print(f"Init Error: {e}")
     finally: conn.close()
 
